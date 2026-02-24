@@ -1,6 +1,12 @@
 from enum import Enum
 from pydantic import BaseModel, EmailStr
 import uuid
+from .exceptions import (
+    AccountFrozenError,
+    AccountClosedError,
+    InsufficientFundsError,
+    InvalidOperationError,
+)
 
 
 class AccountStatuses(Enum):
@@ -40,26 +46,26 @@ class BankAccount(AbstractAccount):
     currency: Currencies
 
     def deposit(self, amount: float):  # TODO: move to utils.py
-        if (self.acc_status.name == AccountStatuses.frozen.name) | (
-            self.acc_status.name == AccountStatuses.closed.name
-        ):
-            print(f"The account is {self.acc_status.name}")
-        elif amount < 0:
-            print("Amount cannot be less then zero")
+        if self.acc_status.name == AccountStatuses.frozen.name:
+            raise AccountFrozenError()
+        elif self.acc_status.name == AccountStatuses.closed.name:
+            raise AccountClosedError()
+        elif amount <= 0:
+            raise InvalidOperationError()
         else:
-            self.current_balance += amount * 100
+            self.current_balance += int(amount * 100)
             print("Deposit successfully made")
 
     def withdraw(self, amount: float):
-        if (self.acc_status.name == AccountStatuses.frozen.name) | (
-            self.acc_status.name == AccountStatuses.closed.name
-        ):
-            print(f"The account is {self.acc_status.name}")
-        elif amount < 0:
-            print("Amount cannot be less then zero")
+        if self.acc_status.name == AccountStatuses.frozen.name:
+            raise AccountFrozenError()
+        elif self.acc_status.name == AccountStatuses.closed.name:
+            raise AccountClosedError()
+        elif amount <= 0:
+            raise InsufficientFundsError()
         else:
-            self.current_balance += amount
-            print("Deposit successfully made")
+            self.current_balance -= int(amount * 100)
+            print("Withdraw successfully made")
 
     def get_account_info(self):  # TODO: output only 4 last digits of phone number
         print(
@@ -73,7 +79,7 @@ Balance: {self.current_balance / 100} {self.currency.value}
         )
 
 
-first_client = BankAccount(
+active_acc = BankAccount(
     acc_status=AccountStatuses.active,
     currency=Currencies.USD,
     name="name",
@@ -81,5 +87,18 @@ first_client = BankAccount(
     email="some@email.com",
     phone_number="8955124896",
 )
-first_client.deposit(1)
-first_client.get_account_info()
+
+frozen_acc = BankAccount(
+    acc_status=AccountStatuses.frozen,
+    currency=Currencies.USD,
+    name="name",
+    surname="surname",
+    email="some@email.com",
+    phone_number="8955124896",
+)
+
+active_acc.deposit(1000)
+
+active_acc.withdraw(189)
+
+frozen_acc.deposit(1)
