@@ -176,6 +176,7 @@ Monthly rate: {self.monthly_rate} %
 
 class PremiumAccount(BankAccount):
     account_type: Literal[AccountTypes.PREMIUM_ACCOUNT] = AccountTypes.PREMIUM_ACCOUNT
+    overdraft_limit: int
     available_overdraft: int
     commission: Decimal  # commission < 1 (0.07 - 7%)
 
@@ -187,6 +188,24 @@ Phone: {"*" * (len(self.phone_number) - 4) + self.phone_number[-4:]}
 Account status: {self.acc_status.value}
 Balance: {self.current_balance / 100} {self.currency.value}
 """
+    
+    def deposit(self, amount):
+        remaining_amount: int = amount
+        overdraft_debt: int = self.overdraft_limit - self.available_overdraft
+
+        if overdraft_debt != 0:
+            if overdraft_debt >= remaining_amount:
+                self.available_overdraft += remaining_amount
+                remaining_amount = 0
+            else:
+                remaining_amount -= overdraft_debt
+                self.available_overdraft = self.overdraft_limit
+
+        if remaining_amount == 0:
+            print("Overdraft succesfully repaid")
+            return
+        
+        return super().deposit(remaining_amount)
 
     def withdraw(self, amount: int) -> None:
         if self.acc_status == AccountStatuses.FROZEN:
@@ -278,7 +297,7 @@ Bonds count: {len(self.bonds)}
             yearly_growth_amount += Decimal(portfolio.balance) * portfolio.yearly_rate
 
         for bond in self.bonds:
-            yearly_growth_amount += Decimal(bond.bonds_count) * bond.coupon_rate
+            yearly_growth_amount += Decimal(bond.bonds_count) * bond.coupon_rate * 12
 
         return int(yearly_growth_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
@@ -327,6 +346,7 @@ if __name__ == "__main__":
         email="mike@example.com",
         phone_number="9999888877",
         currency=Currencies.USD,
+        overdraft_limit=5_000,
         available_overdraft=5_000,
         commission=Decimal("0.10"),
     )
