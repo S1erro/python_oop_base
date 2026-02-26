@@ -190,6 +190,13 @@ Balance: {self.current_balance / 100} {self.currency.value}
 """
     
     def deposit(self, amount):
+        if self.acc_status == AccountStatuses.FROZEN:
+            raise AccountFrozenError()
+        elif self.acc_status == AccountStatuses.CLOSED:
+            raise AccountClosedError()
+        elif amount <= 0:
+            raise InvalidOperationError()
+
         remaining_amount: int = amount
         overdraft_debt: int = self.overdraft_limit - self.available_overdraft
 
