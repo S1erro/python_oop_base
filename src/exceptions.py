@@ -21,3 +21,15 @@ class InsufficientFundsError(Exception):
 
     def __init__(self, message: str = "Insufficient funds"):
         super().__init__(message)
+
+class InappropriateAge(Exception):
+    """Inappropriate age to create an account"""
+
+    def __init__(self, message: str = "Inappropriate age"):
+        super().__init__(message)
+
+class ClientIdUsed(Exception):
+    """Cannot add client: id used"""
+
+    def __init__(self, message: str = "Client id already used"):
+        super().__init__(message)
