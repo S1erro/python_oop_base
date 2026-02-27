@@ -1,14 +1,18 @@
 from enum import Enum
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 import uuid
 from .exceptions import (
     AccountFrozenError,
     AccountClosedError,
     InsufficientFundsError,
     InvalidOperationError,
+    InappropriateAge,
+    ClientIdUsed,
 )
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Literal
+from typing import Literal, Union
+from typing_extensions import TypeAlias
+from datetime import datetime
 
 
 class AccountStatuses(Enum):
@@ -48,6 +52,11 @@ class Bonds(BaseModel):
     coupon_rate: Decimal  # Месячная прибыль с одного купона
 
 
+class ClientContacts(BaseModel):
+    email: EmailStr  # Почта
+    phone: str  # Телефонный номер
+
+
 class AbstractAccount(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[-12:])
     current_balance: int = 0
@@ -70,6 +79,14 @@ class AbstractAccount(BaseModel):
     def get_account_info(self):
         pass
 
+    @staticmethod
+    def ensure_operation_allowed_now() -> None:
+        current_hour = datetime.now().hour
+        if 0 <= current_hour < 5:
+            raise InvalidOperationError(
+                "Operations are not allowed from 00:00 to 05:00"
+            )
+
 
 class BankAccount(AbstractAccount):
     account_type: Literal[AccountTypes.BANK_ACCOUNT] = AccountTypes.BANK_ACCOUNT
@@ -84,7 +101,8 @@ Account status: {self.acc_status.value}
 Balance: {self.current_balance / 100} {self.currency.value}
 """
 
-    def deposit(self, amount: int):
+    def deposit(self, amount: int) -> None:
+        self.ensure_operation_allowed_now()
         if self.acc_status == AccountStatuses.FROZEN:
             raise AccountFrozenError()
         elif self.acc_status == AccountStatuses.CLOSED:
@@ -96,6 +114,7 @@ Balance: {self.current_balance / 100} {self.currency.value}
             print("Deposit successfully made")
 
     def withdraw(self, amount: int) -> None:
+        self.ensure_operation_allowed_now()
         if self.acc_status == AccountStatuses.FROZEN:
             raise AccountFrozenError()
         elif self.acc_status == AccountStatuses.CLOSED:
@@ -139,6 +158,7 @@ Monthly rate: {self.monthly_rate} %
 """
 
     def withdraw(self, amount: int) -> None:
+        self.ensure_operation_allowed_now()
         if self.acc_status == AccountStatuses.FROZEN:
             raise AccountFrozenError()
         elif self.acc_status == AccountStatuses.CLOSED:
@@ -166,7 +186,7 @@ Monthly rate: {self.monthly_rate} %
         }
 
     def apply_monthly_interest(self):
-        interest = interest = int( # Месячная выгода
+        interest = interest = int(  # Месячная выгода
             (Decimal(self.current_balance) * self.monthly_rate).quantize(
                 Decimal("1"), rounding=ROUND_HALF_UP
             )
@@ -188,8 +208,9 @@ Phone: {"*" * (len(self.phone_number) - 4) + self.phone_number[-4:]}
 Account status: {self.acc_status.value}
 Balance: {self.current_balance / 100} {self.currency.value}
 """
-    
-    def deposit(self, amount):
+
+    def deposit(self, amount: int) -> None:
+        self.ensure_operation_allowed_now()
         if self.acc_status == AccountStatuses.FROZEN:
             raise AccountFrozenError()
         elif self.acc_status == AccountStatuses.CLOSED:
@@ -211,10 +232,11 @@ Balance: {self.current_balance / 100} {self.currency.value}
         if remaining_amount == 0:
             print("Overdraft succesfully repaid")
             return
-        
+
         return super().deposit(remaining_amount)
 
     def withdraw(self, amount: int) -> None:
+        self.ensure_operation_allowed_now()
         if self.acc_status == AccountStatuses.FROZEN:
             raise AccountFrozenError()
 
@@ -258,7 +280,9 @@ Balance: {self.current_balance / 100} {self.currency.value}
 
 
 class InvestmentAccount(BankAccount):
-    account_type: Literal[AccountTypes.INVESTMENT_ACCOUNT] = AccountTypes.INVESTMENT_ACCOUNT
+    account_type: Literal[AccountTypes.INVESTMENT_ACCOUNT] = (
+        AccountTypes.INVESTMENT_ACCOUNT
+    )
     investment_portfolios: list[InvestmentPortfolio] = Field(
         default_factory=list
     )  # Портфели
@@ -297,7 +321,9 @@ Bonds count: {len(self.bonds)}
             "Bonds": self.bonds,
         }
 
-    def project_yearly_growth(self):  # Количество денег за год от бондов и портфелей
+    def project_yearly_growth(
+        self,
+    ) -> int:  # Количество денег за год от бондов и портфелей
         yearly_growth_amount: Decimal = Decimal("0")
 
         for portfolio in self.investment_portfolios:
@@ -308,95 +334,268 @@ Bonds count: {len(self.bonds)}
 
         return int(yearly_growth_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
+exchange_rate_to_rub: dict[Currencies, Decimal] = {
+    Currencies.USD: Decimal("78.84"),
+    Currencies.CNY: Decimal("41.14"),
+    Currencies.EUR: Decimal("91.7"),
+    Currencies.KZT: Decimal("21.3"),
+    Currencies.RUB: Decimal("1"),
+}
+
+
+class Client(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[-12:])
+    name: str  # Имя
+    surname: str  # Фамилия
+    middlename: str  # Отчество
+    age: int  # Возраст
+    account_ids: set[str] = Field(default_factory=set)
+    contacts: ClientContacts
+    is_locked: bool = False
+    failed_login_attempts: int = 0
+    has_suspicious_activity: bool = False
+
+    @field_validator("age")
+    @classmethod
+    def validate_age(cls, age: int) -> int:
+        if age < 18:
+            raise InappropriateAge()
+        return age
+
+
+class Bank(BaseModel):
+    MAX_LOGIN_ATTEMPTS: int = 3
+    accounts_dict: dict[str, BankAccount] = Field(default_factory=dict)  # Список счетов
+    clients_dict: dict[str, Client] = Field(default_factory=dict)  # Список клиентов
+
+    def add_client(self, client: Client) -> None:
+        if client.id in self.clients_dict:
+            raise ClientIdUsed()
+        self.clients_dict[client.id] = client
+
+    def create_account(
+        self, client_id: str, account_type: AccountTypes, **additional_acc_info
+    ) -> BankAccount:
+        if client_id not in self.clients_dict:
+            raise KeyError("No such id in the bank")
+
+        map_account_type: dict[AccountTypes, type[BankAccount]] = {
+            AccountTypes.BANK_ACCOUNT: BankAccount,
+            AccountTypes.INVESTMENT_ACCOUNT: InvestmentAccount,
+            AccountTypes.PREMIUM_ACCOUNT: PremiumAccount,
+            AccountTypes.SAVINGS_ACCOUNT: SavingsAccount,
+        }
+
+        client = self.clients_dict[client_id]
+
+        account_class = map_account_type.get(account_type)
+        if account_class is None:
+            raise ValueError(f"Unsupported account type {account_type}")
+
+        new_account = account_class(
+            name=client.name,
+            surname=client.surname,
+            email=client.contacts.email,
+            phone_number=client.contacts.phone,
+            **additional_acc_info,
+        )
+
+        self.accounts_dict[new_account.id] = new_account
+        client.account_ids.add(new_account.id)
+
+        return new_account
+
+    def open_account(self, client_id: str, account_id: str) -> None:
+        if client_id not in self.clients_dict:
+            raise KeyError("No such client id in the bank")
+
+        if account_id not in self.clients_dict[client_id].account_ids:
+            raise KeyError("The client doesn't have account with given")
+        else:
+            self.accounts_dict[account_id].acc_status = AccountStatuses.ACTIVE
+
+    def close_account(self, client_id: str, account_id: str) -> None:
+        if client_id not in self.clients_dict:
+            raise KeyError("No such client id in the bank")
+
+        if account_id not in self.clients_dict[client_id].account_ids:
+            raise KeyError("The client doesn't have account with given")
+        else:
+            self.accounts_dict[account_id].acc_status = AccountStatuses.CLOSED
+
+    def freeze_account(self, client_id: str, account_id: str) -> None:
+        if client_id not in self.clients_dict:
+            raise KeyError("No such client id in the bank")
+
+        if account_id not in self.clients_dict[client_id].account_ids:
+            raise KeyError("The client doesn't have account with given")
+        else:
+            self.accounts_dict[account_id].acc_status = AccountStatuses.FROZEN
+
+    def unfreeze_account(self, client_id: str, account_id: str) -> None:
+        if client_id not in self.clients_dict:
+            raise KeyError("No such client id in the bank")
+
+        if account_id not in self.clients_dict[client_id].account_ids:
+            raise KeyError("The client doesn't have account with given")
+        else:
+            self.accounts_dict[account_id].acc_status = AccountStatuses.ACTIVE
+
+    def authenticate_client(self, client_id: str, phone_number: str) -> bool:
+        """
+        Аутентификация клиента по client_id + phone_number.
+
+        Логика блокировки:
+        - если клиент заблокирован -> сразу False;
+        - если данные верные -> сбрасываем счётчик неудачных попыток;
+        - если данные неверные -> увеличиваем счётчик;
+        - при 3 (MAX_LOGIN_ATTEMPTS) неудачных попытках блокируем клиента.
+        """
+        client = self.clients_dict.get(client_id)
+        if client is None:
+            return False
+
+        if client.is_locked:
+            return False
+
+        if client.contacts.phone == phone_number:
+            client.failed_login_attempts = 0
+            client.has_suspicious_activity = False
+            return True
+
+        client.failed_login_attempts += 1
+        # Простая пометка подозрительной активности:
+        # любой неуспешный вход помечает клиента как "подозрительный".
+        client.has_suspicious_activity = True
+        if client.failed_login_attempts >= self.MAX_LOGIN_ATTEMPTS:
+            client.is_locked = True
+
+        return False
+
+    def search_accounts(self, account_id: str) -> BankAccount:
+        return self.accounts_dict[account_id]
+
+    def get_clients_ranking(
+        self,
+    ) -> list[dict]:  # Рейтинг клиентов по количеству счетов
+        client_ranking: list[dict] = []
+        for client_id in self.clients_dict:
+            acc_count = len(self.clients_dict[client_id].account_ids)
+            client = f"{self.clients_dict[client_id].name} {self.clients_dict[client_id].surname}"
+            client_ranking.append({"acc_count": acc_count, "client": client})
+
+        client_ranking.sort(key=lambda client: client["acc_count"], reverse=True)
+
+        return client_ranking
+
+    def get_total_balance(self) -> int:
+        total_balance: Decimal = Decimal("0")
+
+        for account in self.accounts_dict.values():
+            total_balance += (
+                Decimal(account.current_balance) / Decimal("100")
+            ) * exchange_rate_to_rub[account.currency]
+
+        return int(
+            (total_balance * Decimal("100")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+
 
 if __name__ == "__main__":
+    print()
+    # --- Integration tests for main functionality ---
+    # To allow running tests at any time (including 00:00-05:00),
+    # temporarily disable operation time restriction for this demo block.
+    AbstractAccount.ensure_operation_allowed_now = staticmethod(lambda: None)
 
-    print("\n--- BANK ACCOUNT TEST ---")
-    bank = BankAccount(
+    print("\n=== BANK INTEGRATION TESTS ===")
+    bank = Bank()
+
+    # 1) Create clients
+    client_1 = Client(
         name="John",
         surname="Doe",
-        email="john@example.com",
-        phone_number="1234567890",
-        currency=Currencies.USD,
+        middlename="A",
+        age=30,
+        contacts=ClientContacts(email="john@example.com", phone="1111222233"),
     )
-
-    bank.deposit(10_000)
-    bank.withdraw(3_000)
-    print(bank)
-
-
-    print("\n--- SAVINGS ACCOUNT TEST ---")
-    savings = SavingsAccount(
+    client_2 = Client(
         name="Anna",
         surname="Smith",
-        email="anna@example.com",
-        phone_number="1111222233",
+        middlename="B",
+        age=27,
+        contacts=ClientContacts(email="anna@example.com", phone="9999888877"),
+    )
+
+    bank.add_client(client_1)
+    bank.add_client(client_2)
+    print("[OK] Clients created")
+
+    # 2) Open accounts
+    acc_1 = bank.create_account(
+        client_id=client_1.id,
+        account_type=AccountTypes.BANK_ACCOUNT,
+        currency=Currencies.USD,
+    )
+    acc_2 = bank.create_account(
+        client_id=client_1.id,
+        account_type=AccountTypes.SAVINGS_ACCOUNT,
         currency=Currencies.EUR,
         min_balance=5_000,
-        monthly_rate=Decimal("0.10"),
+        monthly_rate=Decimal("0.01"),
     )
+    acc_3 = bank.create_account(
+        client_id=client_2.id,
+        account_type=AccountTypes.PREMIUM_ACCOUNT,
+        currency=Currencies.RUB,
+        overdraft_limit=10_000,
+        available_overdraft=10_000,
+        commission=Decimal("0.05"),
+    )
+    print("[OK] Accounts opened")
 
-    savings.deposit(20_000)
-    savings.apply_monthly_interest()
-    print(savings)
+    # 3) Account operations
+    acc_1.deposit(20_000)
+    acc_1.withdraw(5_000)
+    acc_2.deposit(30_000)
+    acc_3.deposit(15_000)
+    print("[OK] Deposit/withdraw operations")
+
+    # 4) Authentication attempts and lock after 3 failures
+    assert bank.authenticate_client(client_1.id, "0000000000") is False
+    assert bank.authenticate_client(client_1.id, "0000000000") is False
+    assert bank.authenticate_client(client_1.id, "0000000000") is False
+    assert bank.clients_dict[client_1.id].is_locked is True
+    print("[OK] 3 failed auth attempts -> client locked")
+
+    assert bank.authenticate_client(client_2.id, "9999888877") is True
+    print("[OK] Successful auth")
+
+    # 5) Freeze / unfreeze / close account
+    bank.freeze_account(client_2.id, acc_3.id)
+    assert bank.accounts_dict[acc_3.id].acc_status == AccountStatuses.FROZEN
 
     try:
-        savings.withdraw(18_000)
-    except Exception as e:
-        print("Savings withdraw error:", e)
+        acc_3.deposit(1_000)
+    except AccountFrozenError:
+        print("[OK] Frozen account blocks operations")
 
+    bank.unfreeze_account(client_2.id, acc_3.id)
+    assert bank.accounts_dict[acc_3.id].acc_status == AccountStatuses.ACTIVE
 
-    print("\n--- PREMIUM ACCOUNT TEST ---")
-    premium = PremiumAccount(
-        name="Mike",
-        surname="Brown",
-        email="mike@example.com",
-        phone_number="9999888877",
-        currency=Currencies.USD,
-        overdraft_limit=5_000,
-        available_overdraft=5_000,
-        commission=Decimal("0.10"),
-    )
+    bank.close_account(client_2.id, acc_3.id)
+    assert bank.accounts_dict[acc_3.id].acc_status == AccountStatuses.CLOSED
+    print("[OK] Freeze/unfreeze/close flow")
 
-    premium.deposit(10_000)
-    premium.withdraw(10_000)  # с комиссией
-    print(premium)
-    print("Remaining overdraft:", premium.available_overdraft)
+    # 6) Rankings and totals
+    ranking = bank.get_clients_ranking()
+    total_balance = bank.get_total_balance()
 
+    print("\n--- Ranking ---")
+    for row in ranking:
+        print(row)
 
-    print("\n--- INVESTMENT ACCOUNT TEST ---")
-    invest = InvestmentAccount(
-        name="Investor",
-        surname="Pro",
-        email="investor@example.com",
-        phone_number="5555444433",
-        currency=Currencies.USD,
-    )
-
-    invest.investment_portfolios.append(
-        InvestmentPortfolio(balance=10_000, yearly_rate=Decimal("0.10"))
-    )
-
-    invest.bonds.append(
-        Bonds(issuer_name="Bank", bonds_count=10, coupon_rate=Decimal("100"))
-    )
-
-    growth = invest.project_yearly_growth()
-    print("Projected yearly growth:", growth)
-    print(invest)
-
-
-    print("\n--- STATUS TEST ---")
-    frozen = BankAccount(
-        name="Frozen",
-        surname="User",
-        email="frozen@example.com",
-        phone_number="0000000000",
-        currency=Currencies.USD,
-        acc_status=AccountStatuses.FROZEN,
-    )
-
-    try:
-        frozen.deposit(1_000)
-    except Exception as e:
-        print("Frozen account error:", e)
+    print(f"\nTotal balance in RUB kopecks: {total_balance}")
+    print("\n=== ALL TESTS PASSED ===")
