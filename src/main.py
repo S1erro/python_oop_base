@@ -1,11 +1,13 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from .accounts import AbstractAccount
 from .audit import AuditLog
 from .bank import Bank, Client, ClientContacts
 from .enums import AccountStatuses, AccountTypes, Currencies, TransactionStatuses, TransactionTypes
 from .transactions import Transaction, TransactionProcessor, TransactionQueue
+from .reports import ReportBuilder
 
 
 def create_demo_bank() -> tuple[Bank, list[Client], dict[str, str]]:
@@ -299,5 +301,54 @@ def run_day6_demo() -> None:
     print_reports(bank, processed_transactions)
 
 
+def run_day7_demo() -> None:
+    print("\n=== 📘 День 7: Система отчётности и визуализации ===")
+    AbstractAccount.ensure_operation_allowed_now = staticmethod(lambda: None)
+
+    bank, clients, accounts = create_demo_bank()
+    transactions = build_transactions(accounts)
+
+    queue = TransactionQueue()
+    processor = TransactionProcessor(external_transfer_commission=Decimal("0.025"))
+
+    for transaction in transactions:
+        queue.add_transaction(transaction)
+
+    processed_transactions = bank.process_transactions_with_risk(queue, processor)
+    report_builder = ReportBuilder(bank=bank, processed_transactions=processed_transactions)
+
+    output_dir = Path("reports/day7")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    client_id = clients[0].id
+    report_specs = [
+        ("client", report_builder.build_client_report(client_id), "client_report"),
+        ("bank", report_builder.build_bank_report(), "bank_report"),
+        ("risk", report_builder.build_risk_report(), "risk_report"),
+    ]
+
+    for report_type, report_data, file_stem in report_specs:
+        txt = report_builder.build_text_report(report_type, client_id=client_id)
+        text_path = output_dir / f"{file_stem}.txt"
+        with text_path.open("w", encoding="utf-8") as file:
+            file.write(txt)
+
+        report_builder.export_to_json(report_data, str(output_dir / f"{file_stem}.json"))
+        report_builder.export_to_csv(report_data, str(output_dir / f"{file_stem}.csv"))
+
+    chart_paths = report_builder.save_charts(str(output_dir), client_id=client_id)
+
+    print("\n✅ Отчёты сформированы:")
+    for _, _, file_stem in report_specs:
+        print(f"- {output_dir / f'{file_stem}.txt'}")
+        print(f"- {output_dir / f'{file_stem}.json'}")
+        print(f"- {output_dir / f'{file_stem}.csv'}")
+
+    print("\n📊 Графики сохранены:")
+    for chart in chart_paths:
+        print(f"- {chart}")
+
+
 if __name__ == "__main__":
     run_day6_demo()
+    run_day7_demo()

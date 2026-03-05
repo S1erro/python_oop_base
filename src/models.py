@@ -28,6 +28,7 @@ from .exceptions import (
     InvalidOperationError,
 )
 from .audit import AuditLog, AuditRecord, RiskAnalyzer
+from .reports import ReportBuilder
 from .transactions import run_transactions_demo
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "AuditRecord",
     "AuditLog",
     "RiskAnalyzer",
+    "ReportBuilder",
     "InvestmentPortfolio",
     "Stocks",
     "Bonds",
