@@ -12,7 +12,13 @@ from .accounts import (
     exchange_rate_to_rub,
 )
 from .bank import Bank, Client, ClientContacts
-from .enums import AccountStatuses, AccountTypes, Currencies
+from .enums import (
+    AccountStatuses,
+    AccountTypes,
+    AuditLevels,
+    Currencies,
+    RiskLevels,
+)
 from .exceptions import (
     AccountClosedError,
     AccountFrozenError,
@@ -21,12 +27,18 @@ from .exceptions import (
     InsufficientFundsError,
     InvalidOperationError,
 )
+from .audit import AuditLog, AuditRecord, RiskAnalyzer
 from .transactions import run_transactions_demo
 
 __all__ = [
     "AccountStatuses",
     "Currencies",
     "AccountTypes",
+    "AuditLevels",
+    "RiskLevels",
+    "AuditRecord",
+    "AuditLog",
+    "RiskAnalyzer",
     "InvestmentPortfolio",
     "Stocks",
     "Bonds",

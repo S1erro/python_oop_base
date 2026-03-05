@@ -414,14 +414,22 @@ def run_transactions_demo() -> None:
             sender_acc_id=acc_1.id,
             receiver_acc_id=acc_4.id,
         ),
+        Transaction(
+            transaction_type=TransactionTypes.TRANSFER,
+            amount=350_000,
+            currency=Currencies.RUB,
+            sender_acc_id=acc_1.id,
+            receiver_acc_id=acc_3.id,
+            created_at=datetime.now().replace(hour=1, minute=30, second=0, microsecond=0),
+        ),
     ]
 
     for tx in transactions:
         queue.add_transaction(tx)
 
-    queue.cancel_transaction(transactions[-1].id)
+    queue.cancel_transaction(transactions[-2].id)
 
-    processed = processor.process_queue(queue, bank.accounts_dict)
+    processed = bank.process_transactions_with_risk(queue, processor)
 
     print("=== PROCESSING RESULT ===")
     for tx in processed:
@@ -449,3 +457,18 @@ def run_transactions_demo() -> None:
     print("\n=== ERROR LOG ===")
     for row in processor.error_log:
         print(row)
+
+    print("\n=== AUDIT REPORT: SUSPICIOUS OPERATIONS ===")
+    for record in bank.audit_log.suspicious_operations_report():
+        print(
+            f"[{record.level.value}] tx={record.transaction_id} "
+            f"risk={record.risk_level.value if record.risk_level else '-'} "
+            f"client={record.client_id} msg={record.message}"
+        )
+
+    print("\n=== AUDIT REPORT: CLIENT RISK PROFILE ===")
+    for client_id, stats in bank.audit_log.client_risk_profile().items():
+        print(client_id, stats)
+
+    print("\n=== AUDIT REPORT: ERROR STATISTICS ===")
+    print(bank.audit_log.error_statistics())

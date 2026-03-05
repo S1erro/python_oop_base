@@ -1,5 +1,8 @@
 import uuid
+import time
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -10,8 +13,12 @@ from .accounts import (
     SavingsAccount,
     exchange_rate_to_rub,
 )
+from .audit import AuditLog, RiskAnalyzer
 from .enums import AccountStatuses, AccountTypes
 from .exceptions import ClientIdUsed, InappropriateAge
+
+if TYPE_CHECKING:
+    from .transactions import Transaction, TransactionProcessor, TransactionQueue
 
 
 class ClientContacts(BaseModel):
@@ -43,6 +50,8 @@ class Bank(BaseModel):
     MAX_LOGIN_ATTEMPTS: int = 3
     accounts_dict: dict[str, BankAccount] = Field(default_factory=dict)
     clients_dict: dict[str, Client] = Field(default_factory=dict)
+    audit_log: AuditLog = Field(default_factory=lambda: AuditLog(file_path="audit.log"))
+    risk_analyzer: RiskAnalyzer = Field(default_factory=RiskAnalyzer)
 
     def add_client(self, client: Client) -> None:
         if client.id in self.clients_dict:
@@ -163,3 +172,118 @@ class Bank(BaseModel):
                 Decimal("1"), rounding=ROUND_HALF_UP
             )
         )
+
+    def build_account_to_client_map(self) -> dict[str, str]:
+        account_to_client: dict[str, str] = {}
+        for client_id, client in self.clients_dict.items():
+            for account_id in client.account_ids:
+                account_to_client[account_id] = client_id
+        return account_to_client
+
+    def assess_transaction_risk(self, transaction: "Transaction") -> tuple[bool, str]:
+        from .enums import AuditLevels
+
+        account_to_client = self.build_account_to_client_map()
+        risk_level, reasons, client_id = self.risk_analyzer.analyze(
+            transaction,
+            account_to_client,
+        )
+
+        if risk_level.value in {"medium", "high"}:
+            self.audit_log.log(
+                level=AuditLevels.WARNING,
+                event_type="suspicious_transaction",
+                message=f"Suspicious transaction reasons={reasons}",
+                transaction_id=transaction.id,
+                client_id=client_id,
+                risk_level=risk_level,
+                metadata={
+                    "sender": transaction.sender_acc_id,
+                    "receiver": transaction.receiver_acc_id,
+                    "amount": transaction.amount,
+                },
+            )
+
+        if self.risk_analyzer.is_dangerous(risk_level):
+            self.audit_log.log(
+                level=AuditLevels.CRITICAL,
+                event_type="blocked_transaction",
+                message=f"Transaction blocked by risk engine reasons={reasons}",
+                transaction_id=transaction.id,
+                client_id=client_id,
+                risk_level=risk_level,
+                metadata={
+                    "sender": transaction.sender_acc_id,
+                    "receiver": transaction.receiver_acc_id,
+                    "amount": transaction.amount,
+                },
+            )
+            return False, f"Blocked by risk analyzer: {', '.join(reasons)}"
+
+        return True, ""
+
+    def process_transactions_with_risk(
+        self,
+        queue: "TransactionQueue",
+        processor: "TransactionProcessor",
+        wait_for_scheduled: bool = True,
+    ) -> list["Transaction"]:
+        from .enums import AuditLevels, TransactionStatuses
+
+        processed_transactions: list["Transaction"] = []
+
+        while True:
+            transaction = queue.get_next_transaction()
+            if transaction is None:
+                if wait_for_scheduled and queue.has_waiting_transactions():
+                    time.sleep(0.1)
+                    continue
+                break
+
+            is_allowed, reason = self.assess_transaction_risk(transaction)
+            if not is_allowed:
+                transaction.transaction_status = TransactionStatuses.FAILED
+                transaction.failure_reason = reason
+                transaction.processed_at = datetime.now()
+                processed_transactions.append(transaction)
+                continue
+
+            result = processor.process_transaction(transaction, self.accounts_dict)
+            if result.transaction_status == TransactionStatuses.PENDING:
+                queue.requeue_transaction(result.id)
+                continue
+
+            if result.transaction_status == TransactionStatuses.COMPLETED:
+                self.audit_log.log(
+                    level=AuditLevels.INFO,
+                    event_type="transaction_completed",
+                    message="Transaction completed",
+                    transaction_id=result.id,
+                    metadata={
+                        "type": result.transaction_type.value,
+                        "amount": result.amount,
+                    },
+                )
+
+            if result.transaction_status == TransactionStatuses.FAILED:
+                account_to_client = self.build_account_to_client_map()
+                client_id = account_to_client.get(result.sender_acc_id or "")
+                self.audit_log.log(
+                    level=AuditLevels.ERROR,
+                    event_type="transaction_error",
+                    message=result.failure_reason or "Transaction processing failed",
+                    transaction_id=result.id,
+                    client_id=client_id,
+                    metadata={
+                        "type": result.transaction_type.value,
+                        "amount": result.amount,
+                    },
+                )
+
+            processed_transactions.append(result)
+
+        for transaction in queue.all_transactions.values():
+            if transaction.transaction_status == TransactionStatuses.CANCELLED:
+                processed_transactions.append(transaction)
+
+        return processed_transactions
